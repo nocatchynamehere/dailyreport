@@ -1,0 +1,36 @@
+# Python generated junk
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# Local Data (real data)
+data/
+local_data/
+*.xlsx
+*.csv
+outputs/
+reports/
+*.pdf
+
+# Template whitelist
+!templates/*.xlsx
+!sample_data/*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE junk
+.vscode/
+.idea/
+
+# Future considerations
+.coverage
+htmlcov/
