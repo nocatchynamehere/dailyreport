@@ -1,30 +1,41 @@
 # Database Schema Initialization (2/16/2026)
 
+## Table Search Key
+- users - #001
+- life_buckets - #002
+- projects - #003
+- activities - #004
+- project_members - #005
+- imports - #006
+- time_entries - #007
+- edit_requests - #008
+- audit log - #009
+
+This is also in recommended build order.
+
 ## Database Acronym and Abbreviation Refresher
 
-PK - Primary Key
-UUID - Universally Unique Identifier
-FK - Foreign Key
+- PK - Primary Key
+- UUID - Universally Unique Identifier
+- FK - Foreign Key
 
-## 1) Talking through the schema
-
-### Table 1 - users
+## Table 1 - users (#001)
 Defines system users.  Referenced to enforce multi-user data isolation.
 
-Table Schema
+### Table Schema
 - id - UUID PK
 - username - TEXT NOT NULL UNIQUE
 - is_active - BOOLEAN NOT NULL DEFAULT TRUE
 - created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
 
-Constraints
+### Constraints
 - CHECK (length(trim(username)) > 0)
 - CHECK (username = lower(username))
 
-### Table 2 - life_buckets
+## Table 2 - life_buckets (#002)
 This is defining life buckets categories.
 
-Table Schema
+### Table Schema
 - id - SMALLINT PK
     - SMALLINT is a compact integer type
     - can safely reference bucket IDs in code/config without worrying about name changes
@@ -32,17 +43,17 @@ Table Schema
     - work/upkeep/sleep/dicking_around/health
     - protects against duplicate labels splitting reporting (i.e. work and Work)
 
-Constraints
+### Constraints
 
 - CHECK (length(trim(name)) > 0)
     - no empty string names
 - CHECK (name = lower(name))
     - only stores lowercase names
 
-### Table 3 - projects
+## Table 3 - projects (#003)
 This is for defining projects.
 
-Table Schema
+### Table Schema
 - id - UUID PK
 - name - TEXT NOT NULL UNIQUE
     - project names are a global namespace, must be unique
@@ -51,17 +62,17 @@ Table Schema
 - created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
 - created_by_user_id - UUID NOT NULL FK
 
-Constraints
+### Constraints
 - CHECK (length(trim(name)) > 0)
 - CHECK (name = lower(name))
 
-Foreign Keys
+### Foreign Keys
 - FK created_by_user_id -> users(id)
 
-### Table 4 - activities
+## Table 4 - activities (#004)
 Defines per-user activity names used in time logging.  Referenced by time_entries.activity_id.  Keeping activities scoped prevents cross-user naming conflicts and supports independent evolution of each user's activity taxonomy.
 
-Table Schema
+### Table Schema
 - id - UUID PK
 - user_id - UUID NOT NULL FK
     - who the activities list belongs to
@@ -72,7 +83,7 @@ Table Schema
 - created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
     - audit/debugging, and useful later for UI sorting
 
-Constraints
+### Constraints
 - UNIQUE (user_id, name)
     - prevents duplicate activity names within a user
     - allows multiple users to have identical names
@@ -82,29 +93,29 @@ Constraints
 - CHECK (length(trim(name)) > 0)
 - CHECK (name = lower(name))
 
-Foreign Keys
+### Foreign Keys
 - FK user_id -> users(id)
 
-### Table 5 - project_members
+## Table 5 - project_members (#005)
 This table handles permissions for projects.
 
-Table Schema
+### Table Schema
 - project_id - UUID NOT NULL
 - user_id - UUID NOT NULL
 - role - TEXT NOT NULL DEFAULT 'member'
 - added_at - TIMESTAMPTZ NOT NULL DEFAULT now()
 
-Constraints
+### Constraints
 - CHECK (role IN ('owner', 'member', 'viewer'))
 
-Primary Key
+### Primary Key
 - PK (project_id, user_id)
 
-Foreign Keys
+### Foreign Keys
 - FK project_id -> projects(id)
 - FK user_id -> users(id)
 
-### Table 6 - imports
+## Table 6 - imports (#006)
 This table tracks each ingestion batch.  It stores metadata and outcomes so the system can be:
 - Traceable - know exactly which file produced which rows
 - Idempotent - avoid double importing the same file
@@ -113,7 +124,7 @@ This table tracks each ingestion batch.  It stores metadata and outcomes so the 
 
 time_entries.import_id will reference imports.id so every row can be tied back to the batch that created it.
 
-Table Schema
+### Table Schema
 - id - UUID PK
 - user_id - UUID NOT NULL
     - supports multi user later
@@ -137,7 +148,7 @@ Table Schema
 - error_message - TEXT NULL
     - store the failure reason if status=FAILED
 
-Constraints
+### Constraints
 - UNIQUE (user_id, file_hash)
     - prevents importing the same file contents twice for the same user
 - CHECK (length(trim(file_name)) > 0)
@@ -152,10 +163,10 @@ Constraints
     - also catches accounting bugs in ingestion logic
 - CHECK (status IN ('SUCCESS','FAILED'))
 
-Foreign Keys
+### Foreign Keys
 - FK user_id -> users(id)
 
-Indexes
+### Indexes
 - INDEX (user_id, imported_at)
     - supports the most common query, "show me recent imports for this user":
         ```sql
@@ -163,10 +174,10 @@ Indexes
         ```
     - useful for monitoring, troubleshooting, and building a future import history view
 
-### Table 7 - time_entries
+## Table 7 - time_entries (#007)
 This table will hold the actual data we are keeping track of in terms of our daily activities.  We need to make sure to add just enough constraint so that the table doesn't get flooded with bad data.  This table will be the source of truth for our reporting.  Overlaps will be enforced in ingestion/app.
 
-Table Schema
+### Table Schema
 - id - UUID PK
     - Has to be separate from excel id for safe merging and replication later.  No "id collisions."
 - user_id - UUID NOT NULL FK
@@ -210,7 +221,7 @@ Table Schema
     - when db row was created
     - now() is postgres server time
 
-Constraints
+### Constraints
 - UNIQUE (user_id, source_entry_id)
     - prevents duplicate imports of the same excel row
     - idempotency anchor
@@ -225,7 +236,7 @@ Constraints
 - CHECK (length(trim(created_by)) > 0)
     - enforces no empty strings
 
-Foreign Keys
+### Foreign Keys
 - FK (user_id, activity_id) -> activities(user_id, id)
 - FK user_id -> users(id)
 - FK import_id -> imports(id)
@@ -233,7 +244,7 @@ Foreign Keys
 - FK project_id -> projects(id)
     - if project_id is not NULL, (project_id, user_id) must exist in project_members
 
-Indexes
+### Indexes
 
 These aim to speed up reads at the cost of slowing down writes.  Useful for common queries as relating to reporting.  With such a small dataset, that shouldn't be an issue.  We're adding indexes because they match expected query patterns and because this is portfolio-quality practice, not because we're prematurely optimizing.
 - INDEX (user_id, reporting_day)
@@ -255,10 +266,10 @@ These aim to speed up reads at the cost of slowing down writes.  Useful for comm
         ```
     - useful for reviewing exactly what a single import batch inserted (or for rolling back later)
 
-### Table 8 - edit_requests
+## Table 8 - edit_requests (#008)
 This table keeps track of edit requests
 
-Table Schema
+### Table Schema
 - id – UUID PK
 - user_id – UUID NOT NULL (data owner / whose data is affected)
 - target_table – TEXT NOT NULL
@@ -273,7 +284,7 @@ Table Schema
 - reason – TEXT NOT NULL
 - patch – JSONB NOT NULL (proposed changes as a partial row object)
 
-Constraints
+### Constraints
 - CHECK (length(trim(target_table)) > 0)
 - CHECK (length(trim(target_row_id)) > 0)
 - CHECK (status IN ('PENDING','APPROVED','REJECTED','APPLIED','CANCELLED'))
@@ -282,20 +293,20 @@ Constraints
 - CHECK (status IN ('APPROVED','REJECTED','APPLIED') OR reviewed_at IS NULL)
     - prevents reviewed_at on pending/cancelled
 
-Foreign Keys
+### Foreign Keys
 - FK user_id → users(id)
 - FK requested_by_user_id → users(id)
 - FK reviewed_by_user_id → users(id)
 - FK applied_by_user_id → users(id)
 
-Indexes
+### Indexes
 - INDEX (user_id, status, requested_at DESC)
 - INDEX (target_table, target_row_id)
 
-### Table 9 - audit_log
+## Table 9 - audit_log (#009)
 This keeps track of audits done.  It is trigger written.
 
-Table Schema
+### Table Schema
 - id - UUID PK
 - table_name - TEXT NOT NULL
 - row_id - TEXT NOT NULL
@@ -307,7 +318,7 @@ Table Schema
 - request_id - UUID NULL
 - import_id - UUID NULL
 
-Constraints
+### Constraints
 - CHECK (action IN ('INSERT', 'UPDATE', 'DELETE'))
 - CHECK (length(trim(table_name)) > 0)
 - CHECK (length(trim(row_id)) > 0)
@@ -318,12 +329,12 @@ Constraints
 - CHECK (action <> 'DELETE' OR after IS NULL)
     - if action is DELETE: after should be NULL
 
-Foreign Keys
+### Foreign Keys
 - FK changed_by_user_id -> users(id)
 - FK request_id -> edit_requests(id)
 - FK import_id -> imports(id)
 
-Indexes
+### Indexes
 - INDEX (table_name, row_id, changed_at DESC)
     - fetch history for a row
 - INDEX (changed_at DESC)
