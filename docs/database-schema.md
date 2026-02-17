@@ -238,20 +238,51 @@ Constraints
 - CHECK (role IN ('owner', 'member', 'viewer'))
 
 Primary Key
-PK (project_id, user_id)
+- PK (project_id, user_id)
 
 Foreign Keys
-FK project_id -> projects(id)
-FK user_id -> users(id)
+- FK project_id -> projects(id)
+- FK user_id -> users(id)
 
 ### Table 7 - audit_log
 This keeps track of audits done.  It is trigger written.
 
 Table 7 Schema
 - id - UUID PK
-- table_name, row_id, action, changed_at, changed_by
-- before JSONB, after JSONB
-- request_id - NULLABLE FK to edit_requests (so changes link to approvals)
+- table_name - TEXT NOT NULL
+- row_id - UUID NOT NULL
+- action - TEXT NOT NULL (INSERT/UPDATE/DELETE)
+- changed_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+- changed_by_user_id UUID NULL
+- before JSONB - JSONB NULL
+- after JSONB - JSONB NULL
+- request_id - UUID NULL
+- import_id - UUID NULL
+
+Constraints
+- CHECK (action IN ('INSERT', 'UPDATE', 'DELETE'))
+- CHECK (length(trim(table_name)) > 0)
+- CHECK (before IS NOT NULL OR after IS NOT NULL)
+    - don't allow empty audits
+- CHECK (action <> 'INSERT' OR before IS NULL)
+    - if action is INSERT: before should be NULL
+- CHECK (action <> 'DELETE' OR after IS NULL)
+    - if action is DELETE: after should be NULL
+
+Foreign Keys
+- FK changed_by_user_id -> users(id)
+- FK request_id -> edit_requests(id)
+- FK import_id -> imports(id)
+
+Indexes
+- INDEX (table_name, row_id, changed_at DESC)
+    - fetch history for a row
+- INDEX (changed_at DESC)
+    - recent changes
+- INDEX (request_id)
+    - tie approvals to applied changes
+- INDEX (import_id)
+    - show what an import changed
 
 ### Table 8 - edit_requests
 This table keeps track of edit requests
@@ -267,7 +298,7 @@ Table 8 Schema
 - patch JSONB (the proposed changes)
 
 ### Table 9 - users
-This table keeps track of individual users.
+Defines system users.  Referenced to enforce multi-user data isolation.
 
 Table 9 Schema
 - id - UUID PK
@@ -276,4 +307,5 @@ Table 9 Schema
 - created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
 
 Constraints
--CHECK (length(trim(username)) > 0)
+- CHECK (length(trim(username)) > 0)
+- CHECK (username = lower(username))
