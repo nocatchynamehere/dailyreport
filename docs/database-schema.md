@@ -20,17 +20,23 @@ This is also in recommended build order.
 - FK - Foreign Key
 
 ## Table 1 - users (#001)
-Defines system users.  Referenced to enforce multi-user data isolation.
+This is the user table.  Enforces that data belongs to a specific user with real foreign keys instead of loose text fields.
 
 ### Table Schema
 - id - UUID PK
 - username - TEXT NOT NULL UNIQUE
+    - human friendly identifiers
+    - maps from the excel source document
 - is_active - BOOLEAN NOT NULL DEFAULT TRUE
+    - allows for soft-disable without breaking historical references
 - created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+    - timestamp for when user row was created for debugging, auditing and future UI
 
 ### Constraints
 - CHECK (length(trim(username)) > 0)
+    - prevents empty string or whitespace only usernames
 - CHECK (username = lower(username))
+    - prevents variant duplicants
 
 ## Table 2 - life_buckets (#002)
 This is defining life buckets categories.
