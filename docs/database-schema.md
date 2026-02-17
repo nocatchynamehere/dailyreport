@@ -8,12 +8,165 @@ FK - Foreign Key
 
 ## 1) Talking through the schema
 
-We are going to start out with three tables.  One table to hold the facts, one to hold the audit log, and one to hold edit requests.
+### Table 1 - users
+Defines system users.  Referenced to enforce multi-user data isolation.
 
-### Table 1 - time_entries
-This table will hold the actual data we are keeping track of in terms of our daily activities.  We need to make sure to add just enough constraint so that the table doesn't get flooded with bad data.  This table will be the source of truth for our reporting.
+Table Schema
+- id - UUID PK
+- username - TEXT NOT NULL UNIQUE
+- is_active - BOOLEAN NOT NULL DEFAULT TRUE
+- created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
 
-Table 1 Schema
+Constraints
+- CHECK (length(trim(username)) > 0)
+- CHECK (username = lower(username))
+
+### Table 2 - life_buckets
+This is defining life buckets categories.
+
+Table Schema
+- id - SMALLINT PK
+    - SMALLINT is a compact integer type
+    - can safely reference bucket IDs in code/config without worrying about name changes
+- name - TEXT NOT NULL UNIQUE 
+    - work/upkeep/sleep/dicking_around/health
+    - protects against duplicate labels splitting reporting (i.e. work and Work)
+
+Constraints
+
+- CHECK (length(trim(name)) > 0)
+    - no empty string names
+- CHECK (name = lower(name))
+    - only stores lowercase names
+
+### Table 3 - projects
+This is for defining projects.
+
+Table Schema
+- id - UUID PK
+- name - TEXT NOT NULL UNIQUE
+    - project names are a global namespace, must be unique
+- is_active - BOOLEAN NOT NULL DEFAULT TRUE
+    - allows archiving without breaking historical references
+- created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+- created_by_user_id - UUID NOT NULL FK
+
+Constraints
+- CHECK (length(trim(name)) > 0)
+- CHECK (name = lower(name))
+
+Foreign Keys
+- FK created_by_user_id -> users(id)
+
+### Table 4 - activities
+Defines per-user activity names used in time logging.  Referenced by time_entries.activity_id.  Keeping activities scoped prevents cross-user naming conflicts and supports independent evolution of each user's activity taxonomy.
+
+Table Schema
+- id - UUID PK
+- user_id - UUID NOT NULL FK
+    - who the activities list belongs to
+- name - TEXT NOT NULL
+    - activity label
+- is_active - BOOLEAN NOT NULL DEFAULT TRUE
+    - soft-disable activities without breaking historical references
+- created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+    - audit/debugging, and useful later for UI sorting
+
+Constraints
+- UNIQUE (user_id, name)
+    - prevents duplicate activity names within a user
+    - allows multiple users to have identical names
+- UNIQUE (user_id, id)
+    - required so that time_entries can define a composite foreign key
+    - ensures an activity ID is only valid within the same user scope
+- CHECK (length(trim(name)) > 0)
+- CHECK (name = lower(name))
+
+Foreign Keys
+- FK user_id -> users(id)
+
+### Table 5 - project_members
+This table handles permissions for projects.
+
+Table Schema
+- project_id - UUID NOT NULL
+- user_id - UUID NOT NULL
+- role - TEXT NOT NULL DEFAULT 'member'
+- added_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+
+Constraints
+- CHECK (role IN ('owner', 'member', 'viewer'))
+
+Primary Key
+- PK (project_id, user_id)
+
+Foreign Keys
+- FK project_id -> projects(id)
+- FK user_id -> users(id)
+
+### Table 6 - imports
+This table tracks each ingestion batch.  It stores metadata and outcomes so the system can be:
+- Traceable - know exactly which file produced which rows
+- Idempotent - avoid double importing the same file
+- Auditable - prove what happened and when
+- Debuggable - see failures and counts without reading logs
+
+time_entries.import_id will reference imports.id so every row can be tied back to the batch that created it.
+
+Table Schema
+- id - UUID PK
+- user_id - UUID NOT NULL
+    - supports multi user later
+- file_name - TEXT NOT NULL
+    - name of ingested file
+- file_hash - TEXT NOT NULL
+    - deterministic hash of the files contents
+    - if the same file is processed twice, the hash will match and you can block it cleanly
+- imported_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+    - when the import record was batched
+- imported_by - TEXT NOT NULL
+    - who ran the import (human or service account)
+- rows_seen - INT NOT NULL
+    - how many rows in excel
+- rows_inserted - INT NOT NULL
+    - how many made it into time_entries
+- rows_rejected - INT NOT NULL
+    - validation failures
+- status - TEXT NOT NULL
+    - success/failed
+- error_message - TEXT NULL
+    - store the failure reason if status=FAILED
+
+Constraints
+- UNIQUE (user_id, file_hash)
+    - prevents importing the same file contents twice for the same user
+- CHECK (length(trim(file_name)) > 0)
+- CHECK (length(trim(imported_by)) > 0)
+    - prevent empty strings
+    - keeps data clean
+- CHECK (rows_seen >= 0 AND rows_inserted >= 0 AND rows_rejected >= 0)
+    - row counts should never be negative
+    - catches coding bugs immediately
+- CHECK (rows_inserted + rows_rejected <= rows_seen)
+    - can't insert/reject more rows than you read
+    - also catches accounting bugs in ingestion logic
+- CHECK (status IN ('SUCCESS','FAILED'))
+
+Foreign Keys
+- FK user_id -> users(id)
+
+Indexes
+- INDEX (user_id, imported_at)
+    - supports the most common query, "show me recent imports for this user":
+        ```sql
+        WHERE user_id = ? ORDER BY imported_at DESC LIMIT 10
+        ```
+    - useful for monitoring, troubleshooting, and building a future import history view
+
+### Table 7 - time_entries
+This table will hold the actual data we are keeping track of in terms of our daily activities.  We need to make sure to add just enough constraint so that the table doesn't get flooded with bad data.  This table will be the source of truth for our reporting.  Overlaps will be enforced in ingestion/app.
+
+Table Schema
 - id - UUID PK
     - Has to be separate from excel id for safe merging and replication later.  No "id collisions."
 - user_id - UUID NOT NULL FK
@@ -26,7 +179,7 @@ Table 1 Schema
 - life_bucket_id - FK NOT NULL
     - category bucket (work, upkeep, sleep, dicking_around, health)
 - activity_id - UUID NOT NULL
-    - activity perfomed during category
+    - activity performed during category
     - try to keep to a curated list
 - project_id - UUID NULL
     - optional project attribution
@@ -102,166 +255,62 @@ These aim to speed up reads at the cost of slowing down writes.  Useful for comm
         ```
     - useful for reviewing exactly what a single import batch inserted (or for rolling back later)
 
-### Table 2 - imports
-This table tracks each ingestion batch.  It stores metadata and outcomes so the system can be:
-- Traceable - know exactly which file produced which rows
-- Idempotent - avoid double importing the same file
-- Auditable - prove what happened and when
-- Debuggable - see failures and counts without reading logs
+### Table 8 - edit_requests
+This table keeps track of edit requests
 
-time_entries.import_id will reference imports.id so every row can be tied back to the batch that created it.
-
-Table 2 Schema
-- id - UUID PK
-- user_id - UUID NOT NULL FK
-- file_name - TEXT NOT NULL
-    - name of ingested file
-    - supports multi user later
-- file_hash - TEXT NOT NULL
-    - deterministic hash of the files contents
-    - if the same file is processed twice, the hash will match and you can block it cleanly
-- imported_at - TIMESTAMPTZ NOT NULL DEFAULT now()
-    - when the import record was batched
-- imported_by - TEXT NOT NULL
-    - who ran the import (human or service account)
-- rows_seen - INT NOT NULL
-    - how many rows in excel
-- rows_inserted - INT NOT NULL
-    - how many made it into time_entries
-- rows_rejected - INT NOT NULL
-    - validation failures
-- status - TEXT NOT NULL
-    - success/failed
-- error_message - TEXT NULL
-    - store the failure reason if status=FAILED
+Table Schema
+- id – UUID PK
+- user_id – UUID NOT NULL (data owner / whose data is affected)
+- target_table – TEXT NOT NULL
+- target_row_id – TEXT NOT NULL
+- status – TEXT NOT NULL (PENDING/APPROVED/REJECTED/APPLIED/CANCELLED)
+- requested_by_user_id – UUID NOT NULL
+- requested_at – TIMESTAMPTZ NOT NULL DEFAULT now()
+- reviewed_by_user_id – UUID NULL
+- reviewed_at – TIMESTAMPTZ NULL
+- applied_by_user_id – UUID NULL
+- applied_at – TIMESTAMPTZ NULL
+- reason – TEXT NOT NULL
+- patch – JSONB NOT NULL (proposed changes as a partial row object)
 
 Constraints
-- UNIQUE (user_id, file_hash)
-    - prevents importing the same file contents twice for the same user
-- CHECK (length(trim(file_name)) > 0)
-- CHECK (length(trim(imported_by)) > 0)
-    - prevent empty strings
-    - keeps data clean
-- CHECK (rows_seen >= 0 AND rows_inserted >= 0 AND rows_rejected >= 0)
-    - row counts should never be negative
-    - catches coding bugs immediately
-- CHECK (rows_inserted + rows_rejected <= rows_seen)
-    - can't insert/reject more rows than you read
-    - also catches accounting bugs in ingestion logic
-- CHECK (status IN ('SUCCESS','FAILED'))
+- CHECK (length(trim(target_table)) > 0)
+- CHECK (length(trim(target_row_id)) > 0)
+- CHECK (status IN ('PENDING','APPROVED','REJECTED','APPLIED','CANCELLED'))
+- CHECK (length(trim(reason)) > 0)
+- CHECK (jsonb_typeof(patch) = 'object')
+- CHECK (status IN ('APPROVED','REJECTED','APPLIED') OR reviewed_at IS NULL)
+    - prevents reviewed_at on pending/cancelled
 
 Foreign Keys
-- FK user_id -> users(id)
+- FK user_id → users(id)
+- FK requested_by_user_id → users(id)
+- FK reviewed_by_user_id → users(id)
+- FK applied_by_user_id → users(id)
 
 Indexes
-- INDEX (user_id, imported_at)
-    - supports the most common query, "show me recent imports for this user":
-        ```sql
-        WHERE user_id = ? ORDER BY imported_at DESC LIMIT 10
-        ```
-    - useful for monitoring, troubleshooting, and building a future import history view
+- INDEX (user_id, status, requested_at DESC)
+- INDEX (target_table, target_row_id)
 
-### Table 3 - life_buckets
-This is defining life buckets categories.
-
-Table 3 Schema
-- id - SMALLINT PK
-    - SMALLINT is a compact integer type
-    - can safely reference bucket IDs in code/config without worrying about name changes
-- name - TEXT NOT NULL UNIQUE 
-    - work/upkeep/sleep/dicking_around/health
-    - protects against duplicate labels splitting reporting (i.e. work and Work)
-
-Constraints
-
-- CHECK (length(trim(name)) > 0)
-    - no empty string names
-- CHECK (name = lower(name))
-    - only stores lowercase names
-
-### Table 4 - activities
-Defines per-user activity names used in time logging.  Referenced by time_entries.activity_id.  Keeping activities scoped prevents cross-user naming conflicts and supports independent evolution of each user's activity taxonomy.
-
-Table 4 Schema
-- id - UUID PK
-- user_id - UUID NOT NULL FK
-    - who the activities list belongs to
-- name - TEXT NOT NULL
-    - activity label
-- is_active - BOOL NOT NULL DEFAULT TRUE
-    - soft-disable activities without breaking historical references
-- created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
-    - audit/debugging, and useful later for UI sorting
-
-Contraints
-- UNIQUE (user_id, name)
-    - prevents duplicate activity names within a user
-    - allows multiple users to have identical names
-- UNIQUE (user_id, id)
-    - required so that time_entries can define a composite foreign key
-    - ensures an activity ID is only valid within the same user scope
-- CHECK (length(trim(name)) > 0)
-- CHECK (name = lower(name))
-
-Foreign Keys
-- FK user_id -> users(id)
-
-### Table 5 - projects
-This is for defining projects.
-
-Table 5 Schema
-- id - UUID PK
-- name - TEXT NOT NULL UNIQUE
-    - project names are a global namespace, must be unique
-- is_active - BOOL NOT NULL DEFAULT TRUE
-    - allows archiving without breaking historical references
-- created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
-- created_by_user_id - UUID NOT NULL FK
-
-Constraints
-- CHECK (length(trim(name)) > 0)
-- CHECK (name = lower(name))
-
-Foreign Keys
-- FK created_by_user_id -> users(id)
-
-### Table 6 - project_members
-This table handles permissions for projects.
-
-Table 6 Schema
-- project_id - UUID NOT NULL
-- user_id - UUID NOT NULL
-- role - TEXT NOT NULL DEFAULT 'member'
-- added_at - TIMESTAMPTZ NOT NULL DEFAULT now()
-
-Constraints
-- CHECK (role IN ('owner', 'member', 'viewer'))
-
-Primary Key
-- PK (project_id, user_id)
-
-Foreign Keys
-- FK project_id -> projects(id)
-- FK user_id -> users(id)
-
-### Table 7 - audit_log
+### Table 9 - audit_log
 This keeps track of audits done.  It is trigger written.
 
-Table 7 Schema
+Table Schema
 - id - UUID PK
 - table_name - TEXT NOT NULL
-- row_id - UUID NOT NULL
+- row_id - TEXT NOT NULL
 - action - TEXT NOT NULL (INSERT/UPDATE/DELETE)
 - changed_at - TIMESTAMPTZ NOT NULL DEFAULT now()
-- changed_by_user_id UUID NULL
-- before JSONB - JSONB NULL
-- after JSONB - JSONB NULL
+- changed_by_user_id - UUID NULL
+- before - JSONB NULL
+- after - JSONB NULL
 - request_id - UUID NULL
 - import_id - UUID NULL
 
 Constraints
 - CHECK (action IN ('INSERT', 'UPDATE', 'DELETE'))
 - CHECK (length(trim(table_name)) > 0)
+- CHECK (length(trim(row_id)) > 0)
 - CHECK (before IS NOT NULL OR after IS NOT NULL)
     - don't allow empty audits
 - CHECK (action <> 'INSERT' OR before IS NULL)
@@ -283,29 +332,3 @@ Indexes
     - tie approvals to applied changes
 - INDEX (import_id)
     - show what an import changed
-
-### Table 8 - edit_requests
-This table keeps track of edit requests
-
-Table 8 Schema
-- id - UUID PK
-- user_id - (who it impacts)
-- target_table, target_row_id
-- status (pending/approved/rejected)
-- requested_by, requested_at
-- reviewed_by, reviewed_at
-- reason
-- patch JSONB (the proposed changes)
-
-### Table 9 - users
-Defines system users.  Referenced to enforce multi-user data isolation.
-
-Table 9 Schema
-- id - UUID PK
-- username - TEXT NOT NULL UNIQUE
-- is_active - BOOL NOT NULL DEFAULT TRUE
-- created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
-
-Constraints
-- CHECK (length(trim(username)) > 0)
-- CHECK (username = lower(username))
