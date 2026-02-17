@@ -78,6 +78,7 @@ Foreign Keys
 - FK import_id -> imports(id)
 - FK life_bucket_id -> life_buckets(id)
 - FK project_id -> projects(id)
+    - if project_id is not NULL, (project_id, user_id) must exist in project_members
 
 Indexes
 
