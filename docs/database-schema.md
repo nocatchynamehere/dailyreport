@@ -66,7 +66,9 @@ This is for defining projects.
 - is_active - BOOLEAN NOT NULL DEFAULT TRUE
     - allows archiving without breaking historical references
 - created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+    - records when a project was created
 - created_by_user_id - UUID NOT NULL FK
+    - keeps track of who created the project
 
 ### Constraints
 - CHECK (length(trim(name)) > 0)
@@ -80,14 +82,16 @@ Defines per-user activity names used in time logging.  Referenced by time_entrie
 
 ### Table Schema
 - id - UUID PK
-- user_id - UUID NOT NULL FK
+- user_id - UUID NOT NULL
     - who the activities list belongs to
+    - two users may have the same activity with different meaning
 - name - TEXT NOT NULL
-    - activity label
+    - human readable activity label
 - is_active - BOOLEAN NOT NULL DEFAULT TRUE
     - soft-disable activities without breaking historical references
 - created_at - TIMESTAMPTZ NOT NULL DEFAULT now()
     - audit/debugging, and useful later for UI sorting
+    - keeps track of when the activity was created
 
 ### Constraints
 - UNIQUE (user_id, name)
@@ -97,29 +101,42 @@ Defines per-user activity names used in time logging.  Referenced by time_entrie
     - required so that time_entries can define a composite foreign key
     - ensures an activity ID is only valid within the same user scope
 - CHECK (length(trim(name)) > 0)
+    - blocks empty and whitespace names
 - CHECK (name = lower(name))
+    - prevents duplicates due to casing
 
 ### Foreign Keys
 - FK user_id -> users(id)
+    - ensures the activity belongs to a real user
 
 ## Table 5 - project_members (#005)
-This table handles permissions for projects.
+This is a junction table.  It models a many-to-many relationship.  This means one project can have many users and one user can have many projects.  It also carries permission metadata.
 
 ### Table Schema
 - project_id - UUID NOT NULL
+    - identifies which project the membership row applies to
 - user_id - UUID NOT NULL
+    - identifies which user is a member of the project
 - role - TEXT NOT NULL DEFAULT 'member'
+    - defines permission level within the project
 - added_at - TIMESTAMPTZ NOT NULL DEFAULT now()
+    - records when the user was added to the project
 
 ### Constraints
 - CHECK (role IN ('owner', 'member', 'viewer'))
+    - prevents arbitrary titles
+    - keeps permission system predictable and controlled
 
 ### Primary Key
 - PK (project_id, user_id)
+    - ensures each user can only appear once per project
+    - no multiple roles
 
 ### Foreign Keys
 - FK project_id -> projects(id)
+    - ensures membership rows can't exist for deleted/nonexistant projects
 - FK user_id -> users(id)
+    - ensures only real users can be added
 
 ## Table 6 - imports (#006)
 This table tracks each ingestion batch.  It stores metadata and outcomes so the system can be:
